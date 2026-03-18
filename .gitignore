@@ -1,0 +1,30 @@
+# Build files
+*.obj
+*.exe
+*.ilk
+*.pdb
+*.log
+*.tlog
+*.idb
+*.recipe
+
+# Qt
+*.pro.user
+moc_*.cpp
+ui_*.h
+Makefile
+debug/
+release/
+
+# Visual Studio
+.vs/
+x64/
+ipch/
+*.suo
+*.sdf
+*.opensdf
+*.vcxproj.user
+
+# Others
+*.DS_Store
+Thumbs.db
