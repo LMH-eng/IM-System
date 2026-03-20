@@ -1,72 +1,106 @@
-# IM-System
+# IM即时通讯系统
 
-基于 Qt + WinSocket + MySQL 的即时通讯系统
+基于Qt和原生WinSocket开发的即时通讯软件，实现用户注册登录、好友管理、实时聊天、离线消息等核心功能。
 
-## 项目结构
+## 功能特性
 
-```
-IM-System/
-├── Client/     # Qt 客户端
-└── Server/     # C++ 服务端
-```
+- 用户注册与登录
+- 好友添加与管理
+- 实时聊天（支持富文本）
+- 离线消息存储与推送
+- 离线好友申请
+- 用户在线状态显示
+- 好友签名动态更新
 
 ## 技术栈
 
-### 客户端
-- Qt 5.12
-- C++11
-- TCP Socket
-
-### 服务端
-- WinSocket
-- MySQL
-- C++11
-
-## 功能模块
-
-| 功能 | 说明 |
+| 层级 | 技术 |
 |------|------|
-| 用户注册 | 手机号注册，密码加密存储 |
-| 用户登录 | 登录验证，在线状态管理 |
-| 好友管理 | 添加好友，好友列表 |
-| 即时聊天 | 点对点消息转发 |
-| 心跳机制 | 在线检测，异常断线处理 |
+| 客户端 | Qt 5、C++、QTcpSocket |
+| 服务端 | C++、WinSocket、MySQL |
+| 架构模式 | 中介者模式、分层架构 |
 
-## 架构设计
+## 核心技术点
 
-采用三层架构：
-- **业务层 (Kernel)**: 处理业务逻辑
-- **中介者层 (Mediator)**: 解耦业务层和网络层
-- **网络层 (Net)**: 封装 Socket 通信
+### 1. TCP粘包解决
 
-## 编译运行
+采用**长度前缀法**：发送数据前先发送4字节长度，接收方先读长度，再循环接收完整数据。
+
+```
+[4字节长度][数据内容]
+```
+
+### 2. 中介者模式
+
+网络层与业务层通过中介者交互，降低耦合度：
+- 修改网络实现（TCP换UDP）只需改中介者
+- 业务层无需关心网络细节
+
+```
+┌─────────┐     ┌─────────┐     ┌─────────┐
+│   UI层   │ ←→ │  中介者  │ ←→ │  网络层  │
+└─────────┘     └─────────┘     └─────────┘
+```
+
+### 3. 信号槽跨类传递
+
+Qt信号槽实现UI层与业务层通信，支持跨类信号转发。
+
+### 4. 离线消息
+
+用户离线时消息存入数据库，上线后自动推送。
+
+### 5. 编码转换
+
+客户端UTF-8，服务端GBK环境，实现双向编码转换。
+
+## 项目结构
 
 ### 客户端
-1. 安装 Qt 5.12
-2. 打开 `Client/IMCllient.pro`
-3. 编译运行
+
+```
+IMCllient/
+├── main.cpp              # 程序入口
+├── kernel.h/cpp          # 核心业务逻辑
+├── mainwidget.h/cpp      # 主窗口
+├── logindia.h/cpp        # 登录窗口
+├── frienditem.h/cpp      # 好友列表项控件
+├── chatdia.h/cpp         # 聊天窗口
+├── TcpClient.h/cpp       # TCP客户端封装
+├── Mediator.h/cpp        # 中介者
+└── IData.h/cpp           # 数据协议定义
+```
 
 ### 服务端
-1. 安装 Visual Studio 2022
-2. 配置 MySQL 环境
-3. 打开 `Server/imserver.vcxproj`
-4. 编译运行
 
-## 数据库配置
-
-服务端需要 MySQL 数据库，创建 `t_user` 表：
-
-```sql
-CREATE TABLE t_user (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    tel VARCHAR(20),
-    pass VARCHAR(50),
-    name VARCHAR(50),
-    iconid INT,
-    feeling VARCHAR(100)
-);
 ```
+Server/
+├── main.cpp              # 服务端入口
+├── Kernel.h/cpp          # 核心业务处理
+├── TcpServer.h/cpp       # TCP服务端封装
+├── TcpSocket.h/cpp       # Socket封装
+└── IData.h/cpp           # 数据协议定义
+```
+
+## 数据库设计
+
+| 表名 | 说明 |
+|------|------|
+| t_user | 用户信息表 |
+| t_friend | 好友关系表 |
+| t_offline_msg | 离线消息表 |
+| t_offline_friend_req | 离线好友申请表 |
+
+## 运行方式
+
+### 客户端
+1. 使用Qt Creator打开 `IMCllient.pro`
+2. 编译运行
+
+### 服务端
+1. 配置MySQL数据库，执行建表SQL
+2. 使用Visual Studio编译运行服务端
 
 ## 作者
 
-LMH-eng
+[LMH-eng](https://github.com/LMH-eng)
