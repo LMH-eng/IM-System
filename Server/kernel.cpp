@@ -1,7 +1,51 @@
 #include "kernel.h"
 #include"net/def.h"
 #include"mediator/TcpServerMediator.h"
-#include <vector> //后加
+#include <vector> // 动态数组
+#include <mysql.h> // MySQL转义函数
+
+// UTF-8转GBK编码（新加的）
+static std::string utf8ToGbk(const char* utf8Str)
+{
+	if (!utf8Str || strlen(utf8Str) == 0) return "";
+	
+	// UTF-8 -> 宽字符
+	int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8Str, -1, NULL, 0);
+	wchar_t* wstr = new wchar_t[wlen];
+	MultiByteToWideChar(CP_UTF8, 0, utf8Str, -1, wstr, wlen);
+	
+	// 宽字符 -> GBK
+	int gbkLen = WideCharToMultiByte(CP_ACP, 0, wstr, -1, NULL, 0, NULL, NULL);
+	char* gbkStr = new char[gbkLen];
+	WideCharToMultiByte(CP_ACP, 0, wstr, -1, gbkStr, gbkLen, NULL, NULL);
+	
+	std::string result(gbkStr);
+	delete[] wstr;
+	delete[] gbkStr;
+	return result;
+}
+
+// GBK转UTF-8编码（新加的）
+static std::string gbkToUtf8(const char* gbkStr)
+{
+	if (!gbkStr || strlen(gbkStr) == 0) return "";
+	
+	// GBK -> 宽字符
+	int wlen = MultiByteToWideChar(CP_ACP, 0, gbkStr, -1, NULL, 0);
+	wchar_t* wstr = new wchar_t[wlen];
+	MultiByteToWideChar(CP_ACP, 0, gbkStr, -1, wstr, wlen);
+	
+	// 宽字符 -> UTF-8
+	int utf8Len = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, NULL, 0, NULL, NULL);
+	char* utf8Str = new char[utf8Len];
+	WideCharToMultiByte(CP_UTF8, 0, wstr, -1, utf8Str, utf8Len, NULL, NULL);
+	
+	std::string result(utf8Str);
+	delete[] wstr;
+	delete[] utf8Str;
+	return result;
+}
+
 kernel* kernel::m_pKernel = nullptr;
 kernel::kernel():m_pMediator(nullptr)
 {
@@ -15,7 +59,7 @@ kernel::~kernel()
 
 void kernel::setProtpcolVer()
 {
-	//初始化数组
+	// 初始化协议处理函数数组
 	memset(m_pArrProtFun, 0, sizeof(m_pArrProtFun));
 	m_pArrProtFun[DEF_REGISTER_RQ - DEF_BASE_PACKAGETYPE] = &kernel::dealRegisterRq;
 	m_pArrProtFun[DEF_LOGIN_RQ - DEF_BASE_PACKAGETYPE] = &kernel::dealLoginRq;
@@ -23,18 +67,17 @@ void kernel::setProtpcolVer()
 	m_pArrProtFun[DEF_FRIEND_OFFLINE - DEF_BASE_PACKAGETYPE] = &kernel::dealOfflineRq;
 	m_pArrProtFun[DEF_ADD_FRIEND_RQ - DEF_BASE_PACKAGETYPE] = &kernel::dealAddFriendRq;
 	m_pArrProtFun[DEF_ADD_FRIEND_RS - DEF_BASE_PACKAGETYPE] = &kernel::dealAddFriendRs;
-	m_pArrProtFun[DEF_HEARTBEAT - DEF_BASE_PACKAGETYPE] = &kernel::dealHeartbeatRq; //后加 绑定心跳请求处理函数
-	//把处理函数的地址保存到数组中
+	m_pArrProtFun[DEF_HEARTBEAT - DEF_BASE_PACKAGETYPE] = &kernel::dealHeartbeatRq;
 }
-
 bool kernel::startServer()
-{//打开网络
+{
+	// 开启网络
 	m_pMediator = new TcpServerMediator;
 	if (!m_pMediator->openNet()) {
-		cout << "打开网络失败" << endl;
+		cout << "开启网络失败" << endl;
 		return false;
 	}
-	//连接数据库
+	// 连接数据库
 	char ip[] = "127.0.0.1";
 	char name[] = "root";
 	char pass[] = "1a2b3c4d";
@@ -48,26 +91,26 @@ bool kernel::startServer()
 	}
 	return true;
 }
-
 void kernel::closeServer()
-{//关闭网络
+{
+	// 关闭网络
 	if (m_pMediator) {
 		m_pMediator->closeNet();
 		delete m_pMediator;
 		m_pMediator = nullptr;
-		//断开数据库
+		// 关闭数据库
 		m_sql.DisConnect();
+	}
 }
-}
-//接受所有数据
+// 处理接收到的数据
 void kernel::dealData(char* data, int len, long from)
 {
 	cout << __func__ << endl;
-	//   取出协议类型
+	// 获取协议类型
 	packageType type = *(packageType*)data;
-	//计算数组下标
+	// 计算协议处理数组下标
 	int index = type - DEF_BASE_PACKAGETYPE;
-	if (index >= 0 && index < _PROTOCOL_COUNT) {//初步判断是否合法
+	if (index >= 0 && index < _PROTOCOL_COUNT) {
 		PROFUN pFun = m_pArrProtFun[index];
 		if (pFun) {
 			(this->*pFun)(data, len, from);
@@ -85,60 +128,64 @@ void kernel::dealData(char* data, int len, long from)
 	data = nullptr;
 	
 }
-//处理注册请求
+// 处理注册请求
 void kernel::dealRegisterRq(char* data, int len, long from)
 {
 	cout << __func__ << endl;
-
 	
 	PROT_REGISTER_INFO_RQ* rq = (PROT_REGISTER_INFO_RQ*)data;
-	//1.从数据库根据昵称查询
-	//cout <<"rq:" << rq->name<<" "<<rq->packType<<" "<<rq->pass<<" "<<rq->tel << endl;
-	list<string> lstStr;//装查询结果
-	char sql[1024] = "";//装sql语句
+	// 1.查询用户名是否存在
+	list<string> lstStr;// 存储结果
+	char sql[1024] = "";// sql语句
 	sprintf_s(sql,"select name from t_user where name='%s';",rq->name);
-	{lock_guard<mutex> lock(m_dbMutex); // 后加的
-	if (!m_sql.SelectMySql(sql,1,lstStr)) {
-		cout << "查询数据库失败：" << sql << endl;
-		return;
-	}
-	} // 后加的
-	cout <<"sql:"<< sql << endl;
-	//2.判断查询结果是否为空
-	PROT_REGISTER_INFO_RS rs;
-	if (0 ==lstStr.size() )
-	{//查询结果为空说明昵称未被注册
-		//3.从数据中根据电话号查询
-		sprintf_s(sql, "select tel from t_user where tel='%s';", rq->tel);
-		{lock_guard<mutex> lock(m_dbMutex); // 后加的
-		if (!m_sql.SelectMySql(sql, 1, lstStr)) {
-			cout << "查询数据库失败：" << sql << endl;
+	{
+		lock_guard<mutex> lock(m_dbMutex);
+		if (!m_sql.SelectMySql(sql,1,lstStr)) {
+			cout << "查询数据库失败" << sql << endl;
 			return;
 		}
-		} // 后加的
-		//4.判断查询结果是否为空
-		if (0 == lstStr.size())
-		{//查询结果为空说明电话哈号未被注册
-			//5.把用户信息写入t_uer表中
-			sprintf_s(sql, "insert into t_user(name,tel,pass,iconid,feeling)values('%s','%s','%s',5,'学习类');", rq->name,rq->tel,rq->pass);
-			{lock_guard<mutex> lock(m_dbMutex); // 后加的
-			if (!m_sql.UpdateMySql(sql)) {
-				cout << "插入数据库失败：" << sql << endl;
+	}
+	cout <<"sql:"<< sql << endl;
+	// 2.判断用户名是否存在
+	PROT_REGISTER_INFO_RS rs;
+	if (0 ==lstStr.size() )
+	{
+		// 用户名不存在，继续检查电话号码
+		// 3.查询该电话号码是否存在
+		sprintf_s(sql, "select tel from t_user where tel='%s';", rq->tel);
+		{
+			lock_guard<mutex> lock(m_dbMutex);
+			if (!m_sql.SelectMySql(sql, 1, lstStr)) {
+				cout << "查询数据库失败" << sql << endl;
 				return;
 			}
-			} // 后加的
-			//6.注册成功就是给rs赋值
+		}
+		// 4.判断电话号码是否存在
+		if (0 == lstStr.size())
+		{
+			// 电话号码也不存在，可以注册
+			// 5.将用户写入t_user表
+			sprintf_s(sql, "insert into t_user(name,tel,pass,iconid,feeling)values('%s','%s','%s',5,'新用户');", rq->name,rq->tel,rq->pass);
+			{
+				lock_guard<mutex> lock(m_dbMutex);
+				if (!m_sql.UpdateMySql(sql)) {
+					cout << "注册写入失败" << sql << endl;
+					return;
+				}
+			}
+			// 6.返回注册成功rs
 			rs.result = DEF_REGISTER_SUC;
 		}
-		else {//查询结果不为空，说明电话号已被注册
-			//7.注册失败DEF_REGISTER_TEL_EXISTS
+		else {
+			// 电话号码已存在
+			// 7.返回错误DEF_REGISTER_TEL_EXISTS
 			rs.result = DEF_REGISTER_TEL_EXISTS;
 		}
 
 	}
 	else {
-		//查询结果不为空说明昵称已被注册
-		//8查询失败
+		// 用户名已存在
+		// 8.返回错误
 		rs.result = DEF_REGISTER_NAME_EXISTS;
 
 	}
@@ -149,53 +196,58 @@ void kernel::dealLoginRq(char* data, int len, long from)
 {
 	cout << __func__ << endl;
 	PROT_LOGIN_RQ* rq = (PROT_LOGIN_RQ*)data;
-// 1、从数据库根据电话号查询密码
-    list<string> lstStr;//装查询结果
-	char sql[1024] = "";//装sql语句
+	// 1.根据电话号码查询用户信息
+	list<string> lstStr;// 存储结果
+	char sql[1024] = "";// sql语句
 	sprintf_s(sql, "select pass,id from t_user where tel='%s';", rq->tel);
-	{lock_guard<mutex> lock(m_dbMutex); // 后加的
-	if (!m_sql.SelectMySql(sql, 2, lstStr)) {
-		cout << "查询数据库失败：" << sql << endl;
-		return;
+	{
+		lock_guard<mutex> lock(m_dbMutex);
+		if (!m_sql.SelectMySql(sql, 2, lstStr)) {
+			cout << "查询数据库失败" << sql << endl;
+			return;
+		}
 	}
-	} // 后加的
-// 2、判断查询结果是否为空
+	// 2.判断用户是否存在
 	PROT_LOGIN_RS rs;
 	if (0 ==lstStr.size() ) {
-		// 查询结果为空，说明手机号未注册
-		// 3、登录失败DEF_LOGIN_NOTEXIST
+		// 用户不存在
+		// 3.返回错误DEF_LOGIN_NOTEXIST
 		rs.result = DEF_LOGIN_NOTEXIST;
 	}
 	else {
-		// 4、从查询结果中取出密码
+		// 4.用户存在，取出密码
 		string pass = lstStr.front();
 		lstStr.pop_front();
-		//取出用户id
+		// 取出用户id
 		int userId= stoi(lstStr.front());
 		lstStr.pop_front();
-		// 5、判断密码是否正确，跟用户当前输入的密码
+		// 5.判断密码是否正确
 		if (pass==rq->pass ) {
-			// 6、密码相等，登录成功DEF_LOGIN_SUC
+			// 6.密码正确，返回DEF_LOGIN_SUC
 			rs.result = DEF_LOGIN_SUC;
 			rs.userId = userId;
-			//保存用户id和socket
-			m_mutex.lock(); // 后加的
+			// 映射用户id和socket
+			m_mutex.lock();
 			m_mapIdToSocket[userId]=from;
-			m_mapIdToLastActive[userId] = time(nullptr); //后加 记录用户最后活跃时间
-			m_mutex.unlock(); // 后加的
-			// 8、把登录结果返回给客户端
+			m_mapIdToLastActive[userId] = time(nullptr); // 记录用户最后活跃时间
+			m_mutex.unlock();
+			// 8.发送登录结果给客户端
 			m_pMediator->sendData((char*)&rs, sizeof(rs), from);
-			//给客户端发送登录用户的信息和她好友的信息
+			// 发送用户信息和好友信息给客户端
 			sendUserInfoAndFriendInfo(userId);
+			// 发送离线消息
+			sendOfflineMsgs(userId);
+			// 发送离线好友申请（新加的）
+			sendOfflineFriendReqs(userId);
 			return;
 		}
 		else {
-			// 7、密码不相等，登录失败DEF_LOGIN_PASS_ERR
+			// 7.密码错误，返回DEF_LOGIN_PASS_ERR
 			rs.result = DEF_LOGIN_PASS_ERR;
 			
 		}
 	}
-	// 8、把登录结果返回给客户端
+	// 8.发送登录结果给客户端
 	m_pMediator->sendData((char*)&rs, sizeof(rs), from);
 
 }
@@ -203,136 +255,259 @@ void kernel::dealLoginRq(char* data, int len, long from)
 void kernel::sendUserInfoAndFriendInfo(int userId)
 {
 	cout << __func__ << endl;
-	//根据自己的id查询自己的信息
+	// 根据用户id获取用户信息
 	PROT_FRIEND_INFO userInfo;
 	getInfoById(userId, &userInfo);
-	//把自己的信息发给客户端
-	m_mutex.lock(); // 后加的
-	bool userOnline = m_mapIdToSocket.count(userId) > 0; // 后加的
-	SOCKET userSocket = m_mapIdToSocket[userId]; // 后加的
-	m_mutex.unlock(); // 后加的
-	if (userOnline) { // 后加的
-	//if (m_mapIdToSocket.count(userId) > 0) {
-		m_pMediator->sendData((char*)&userInfo, sizeof(userInfo), userSocket); // 后加的
-		//m_pMediator->sendData((char*)&userInfo, sizeof(userInfo), m_mapIdToSocket[userId]);
+	// 检查用户是否仍然在线
+	m_mutex.lock();
+	bool userOnline = m_mapIdToSocket.count(userId) > 0;
+	SOCKET userSocket = m_mapIdToSocket[userId];
+	m_mutex.unlock();
+	if (userOnline) {
+		m_pMediator->sendData((char*)&userInfo, sizeof(userInfo), userSocket);
 	}
-	//根据自己的id查询好友id列表
-	list<string> lstStr;//装查询结果
-	char sql[1024] = "";//装sql语句
+	// 根据用户id查询好友id列表
+	list<string> lstStr;// 存储结果
+	char sql[1024] = "";// sql语句
 	sprintf_s(sql, "select idB from t_friend where idA='%d';", userId);
-	{lock_guard<mutex> lock(m_dbMutex); // 后加的
-	if (!m_sql.SelectMySql(sql, 1, lstStr)) {
-		cout << "查询数据库失败：" << sql << endl;
-		return;
+	{
+		lock_guard<mutex> lock(m_dbMutex);
+		if (!m_sql.SelectMySql(sql, 1, lstStr)) {
+			cout << "查询数据库失败" << sql << endl;
+			return;
+		}
 	}
-	} // 后加的
-	//遍历好友id列表
+	// 遍历好友id列表
 	int friendId = 0;
 	PROT_FRIEND_INFO friendInfo;
 	while (lstStr.size() > 0) {
-    //取出好友id
+		// 取出好友id
 		friendId = stoi(lstStr.front());
 		lstStr.pop_front();
-	//根据好友id查询好友的信息
+		// 根据好友id获取好友信息
 		getInfoById(friendId, &friendInfo);
-//把好友信息发回客户端
-		m_mutex.lock(); // 后加的
-		bool userOnline2 = m_mapIdToSocket.count(userId) > 0; // 后加的
-		SOCKET userSocket2 = m_mapIdToSocket[userId]; // 后加的
-		m_mutex.unlock(); // 后加的
-		if (userOnline2) { // 后加的
-		//if (m_mapIdToSocket.count(userId) > 0) {
-			m_pMediator->sendData((char*)&friendInfo, sizeof(friendInfo), userSocket2); // 后加的
-			//m_pMediator->sendData((char*)&friendInfo, sizeof(friendInfo), m_mapIdToSocket[userId]);
+		// 发送好友信息给用户
+		m_mutex.lock();
+		bool userOnline2 = m_mapIdToSocket.count(userId) > 0;
+		SOCKET userSocket2 = m_mapIdToSocket[userId];
+		m_mutex.unlock();
+		if (userOnline2) {
+			m_pMediator->sendData((char*)&friendInfo, sizeof(friendInfo), userSocket2);
 		}
 	}
-	//判断好友是否在线把自己的信息发给好友
-	m_mutex.lock(); // 后加的
-	bool friendOnline2 = m_mapIdToSocket.count(friendId) > 0; // 后加的
-	SOCKET friendSocket2 = m_mapIdToSocket[friendId]; // 后加的
-	m_mutex.unlock(); // 后加的
-	if (friendOnline2) // 后加的
-	//if (m_mapIdToSocket.count(friendId) > 0)
+	// 判断好友是否在线，如果在线发送用户信息给好友
+	m_mutex.lock();
+	bool friendOnline2 = m_mapIdToSocket.count(friendId) > 0;
+	SOCKET friendSocket2 = m_mapIdToSocket[friendId];
+	m_mutex.unlock();
+	if (friendOnline2)
 	{
-		m_pMediator->sendData((char*)&userInfo, sizeof(userInfo), friendSocket2); // 后加的
-		//m_pMediator->sendData((char*)&userInfo, sizeof(userInfo), m_mapIdToSocket[friendId]);
+		m_pMediator->sendData((char*)&userInfo, sizeof(userInfo), friendSocket2);
 	}
-		
-		
-
 	
 }
-//根据id查询用户信息
+// 根据id获取用户信息
 void kernel::getInfoById(int id, PROT_FRIEND_INFO* info)
 {
 	cout << __func__ <<"id:"<<id<< endl;
 	info->userId = id;
-	//判断用户是否在线（判断map中是否有这个用户的id）
-	m_mutex.lock(); // 后加的
-	bool online = m_mapIdToSocket.count(id) > 0; // 后加的
-	m_mutex.unlock(); // 后加的
-	if (online) { // 后加的
-	//if (m_mapIdToSocket.count(id) > 0) {
-		//在线
+	// 判断用户是否在线，即判断map中是否存在该用户id
+	m_mutex.lock();
+	bool online = m_mapIdToSocket.count(id) > 0;
+	m_mutex.unlock();
+	if (online) {
+		// 在线
 		info->status = DEF_STATUS_ONLINE;
 	}
 	else {
-		//不在线
+		// 离线
 		info->status = DEF_STATUS_OFFLINE;
 	}
-	//从数据库查询用户的昵称，头像id和签名
-	list<string> lstStr;//装查询结果
-	char sql[1024] = "";//装sql语句
+	// 从数据库中查询用户信息，根据用户id查询
+	list<string> lstStr;// 存储结果
+	char sql[1024] = "";// sql语句
 	sprintf_s(sql, "select name,iconid,feeling from t_user where id='%d';", id);
-	{lock_guard<mutex> lock(m_dbMutex); // 后加的
-	if (!m_sql.SelectMySql(sql, 3, lstStr)) {
-		cout << "查询数据库失败：" << sql << endl;
-		return;
+	{
+		lock_guard<mutex> lock(m_dbMutex);
+		if (!m_sql.SelectMySql(sql, 3, lstStr)) {
+			cout << "查询数据库失败" << sql << endl;
+			return;
+		}
 	}
-	} // 后加的
-	//判断查询结果的个数是否是3
+	// 判断查询结果是否为3
 	if (3 == lstStr.size()) {
-		//取出name
+		// 取出name
 		strcpy_s(info->name, sizeof(info->name), lstStr.front().c_str());
 		lstStr.pop_front();
-		//取出iconid
+		// 取出iconid
 		info->iconId = stoi(lstStr.front());
 		lstStr.pop_front();
-		//取出签名
+		// 取出签名
 		strcpy_s(info->feeling, sizeof(info->feeling), lstStr.front().c_str());
 		lstStr.pop_front();
 	}
 	else {
-		cout << "查询数据库sql:" << sql << endl;
+		cout << "查询数据失败sql:" << sql << endl;
 	}
 
+}
+
+// 发送离线消息
+void kernel::sendOfflineMsgs(int userId)
+{
+	cout << __func__ << " userId: " << userId << endl;
+	list<string> lstStr;
+	char sql[1024] = "";
+	sprintf_s(sql, "select id, from_id, message from t_offline_msg where to_id='%d';", userId);
+	{
+		lock_guard<mutex> lock(m_dbMutex);
+		if (!m_sql.SelectMySql(sql, 3, lstStr)) {
+			cout << "查询离线消息失败" << endl;
+			return;
+		}
+	}
+	
+	// 遍历并发送离线消息
+	while (lstStr.size() >= 3) {
+		int msgId = stoi(lstStr.front());
+		lstStr.pop_front();
+		int fromId = stoi(lstStr.front());
+		lstStr.pop_front();
+		string msg = lstStr.front();
+		lstStr.pop_front();
+		
+		// 构造聊天消息
+		PROT_CHATMSG_RQ* rq = new PROT_CHATMSG_RQ(fromId, userId);
+		strncpy_s(rq->chatmsg, sizeof(rq->chatmsg), msg.c_str(), msg.length());
+		
+		// 检查用户是否仍在线
+		m_mutex.lock();
+		bool online = m_mapIdToSocket.count(userId) > 0;
+		SOCKET userSocket = 0;
+		if (online) {
+			userSocket = m_mapIdToSocket[userId];
+		}
+		m_mutex.unlock();
+		
+		if (online) {
+			m_pMediator->sendData((char*)rq, sizeof(PROT_CHATMSG_RQ), userSocket);
+			cout << "发送离线消息, from: " << fromId << " to: " << userId << endl;
+		}
+		delete rq;
+		
+		// 删除已发送的离线消息
+		char delSql[256] = "";
+		sprintf_s(delSql, "delete from t_offline_msg where id=%d;", msgId);
+		{
+			lock_guard<mutex> lock(m_dbMutex);
+			m_sql.UpdateMySql(delSql);
+		}
+	}
+}
+
+// 发送离线好友申请（新加的）
+void kernel::sendOfflineFriendReqs(int userId)
+{
+	cout << __func__ << " userId: " << userId << endl;
+	list<string> lstStr;
+	char sql[1024] = "";
+	sprintf_s(sql, "select id, from_id, from_name from t_offline_friend_req where to_id='%d';", userId);
+	{
+		lock_guard<mutex> lock(m_dbMutex);
+		if (!m_sql.SelectMySql(sql, 3, lstStr)) {
+			return;
+		}
+	}
+	
+	while (lstStr.size() >= 3) {
+		int reqId = stoi(lstStr.front());
+		lstStr.pop_front();
+		int fromId = stoi(lstStr.front());
+		lstStr.pop_front();
+		string fromName = lstStr.front();
+		lstStr.pop_front();
+		
+		// 构造添加好友请求（新加的）
+		PROT_ADD_FRIEND_RQ* rq = new PROT_ADD_FRIEND_RQ(fromId);
+		// GBK转UTF-8后发送给客户端（新加的）
+		std::string utf8Name = gbkToUtf8(fromName.c_str());
+		strncpy_s(rq->myname, sizeof(rq->myname), utf8Name.c_str(), utf8Name.length());
+		
+		m_mutex.lock();
+		bool online = m_mapIdToSocket.count(userId) > 0;
+		SOCKET userSocket = 0;
+		if (online) {
+			userSocket = m_mapIdToSocket[userId];
+		}
+		m_mutex.unlock();
+		
+		if (online) {
+			m_pMediator->sendData((char*)rq, sizeof(PROT_ADD_FRIEND_RQ), userSocket);
+			cout << "发送离线好友申请, from: " << fromId << " to: " << userId << endl;
+		}
+		delete rq;
+		
+		// 删除已发送的离线好友申请（新加的）
+		char delSql[256] = "";
+		sprintf_s(delSql, "delete from t_offline_friend_req where id=%d;", reqId);
+		{
+			lock_guard<mutex> lock(m_dbMutex);
+			m_sql.UpdateMySql(delSql);
+		}
+	}
 }
 
 void kernel::dealChatRq(char* data, int len, long from)
 {
 	cout << __func__ << endl;
 	PROT_CHATMSG_RQ* rq = (PROT_CHATMSG_RQ*)data;
-	//1.判断好友是否在线
-	m_mutex.lock(); // 后加的
-	bool online = m_mapIdToSocket.count(rq->friendid) > 0; // 后加的
-	SOCKET friendSocket = m_mapIdToSocket[rq->friendid]; // 后加的
-	m_mutex.unlock(); // 后加的
-	if (online) { // 后加的
-	//if (m_mapIdToSocket.count(rq->friendid) > 0) {
-		//在线就把聊天请求转发给好友
-		m_pMediator->sendData(data, len, friendSocket); // 后加的
-		//m_pMediator->sendData(data, len, m_mapIdToSocket[rq->friendid]);
+	// 1.判断好友是否在线
+	m_mutex.lock();
+	bool online = m_mapIdToSocket.count(rq->friendid) > 0;
+	SOCKET friendSocket = 0;
+	if (online) {
+		friendSocket = m_mapIdToSocket[rq->friendid];
+	}
+	m_mutex.unlock();
+	if (online) {
+		// 好友在线，直接转发消息
+		m_pMediator->sendData(data, len, friendSocket);
 	}
 	else {
-		//B不在线,告诉A,B不在线
+		// ============ 原代码（修改前）：只返回失败，不保存离线消息 ============
+		// PROT_CHATMSG_RS rs;
+		// rs.result = DEF_CHATMSG_FAIL;
+		// rs.formid = rq->friendid;
+		// rs.destid = rq->myid;
+		// m_pMediator->sendData((char*)&rs, sizeof(rs), from);
+		// 
+		// TODO: 发给A后B离线，B登录后，之前发给B的消息，B应该收到，所以要存到数据库里
+		// 需要一张离线消息表：保存Aid,Bid，消息内容，时间
+		// B上线后，查询数据库，发现有B的离线消息，发送给B，然后删除数据库中B的离线消息
+		// =======================================================================
+		
+		// ============ 新代码（修改后）：保存离线消息到数据库 ============
+		// 好友离线，保存离线消息到数据库
+		char sql[4096] = "";
+		// 转义消息中的特殊字符，防止SQL注入
+		char escapedMsg[DEF_CHATMSG_LEN * 2] = "";
+		mysql_escape_string(escapedMsg, rq->chatmsg, strlen(rq->chatmsg));
+		sprintf_s(sql, "insert into t_offline_msg(from_id, to_id, message) values(%d, %d, '%s');", 
+			rq->myid, rq->friendid, escapedMsg);
+		{
+			lock_guard<mutex> lock(m_dbMutex);
+			if (!m_sql.UpdateMySql(sql)) {
+				cout << "保存离线消息失败" << sql << endl;
+			} else {
+				cout << "离线消息已保存, from: " << rq->myid << " to: " << rq->friendid << endl;
+			}
+		}
+		// 返回好友离线状态给发送者
 		PROT_CHATMSG_RS rs;
-		rs.result = DEF_CHATMSG_FAIL;
+		rs.result = DEF_CHATMSG_FAIL; // 好友离线
 		rs.formid = rq->friendid;
 		rs.destid = rq->myid;
 		m_pMediator->sendData((char*)&rs, sizeof(rs), from);
-		//正常流程：A和B聊天，B当前不在线，把聊天请求的内容保存到数据库
-		//创建一个表：保存Aid,Bid,聊天内容，发送时间
-		//B登录成功之后遍历这个表，取出数据转发给B把发送成功的数据从表中删除
 	}
 }
 
@@ -340,96 +515,112 @@ void kernel::dealOfflineRq(char* data, int len, long from)
 {
 	cout << __func__ << endl;
 	PROT_FRIEND_OFFLINE* rq = (PROT_FRIEND_OFFLINE*)data;
-	//根据下线用户的id查询好友id列表
-	list<string> lstStr;//装查询结果
-	char sql[1024] = "";//装sql语句
+	// 根据用户id查询好友id列表
+	list<string> lstStr;// 存储结果
+	char sql[1024] = "";// sql语句
 	sprintf_s(sql, "select idB from t_friend where idA='%d';", rq->myid);
-	{lock_guard<mutex> lock(m_dbMutex); // 后加的
-	if (!m_sql.SelectMySql(sql, 1, lstStr)) {
-		cout << "查询数据库失败：" << sql << endl;
-		return;
+	{
+		lock_guard<mutex> lock(m_dbMutex);
+		if (!m_sql.SelectMySql(sql, 1, lstStr)) {
+			cout << "查询数据库失败" << sql << endl;
+			return;
+		}
 	}
-	} // 后加的
-	//遍历好友id列表
+	// 遍历好友id列表
 	int friendId = 0;
 	PROT_FRIEND_INFO friendInfo;
 	while (lstStr.size() > 0) {
-		//取出好友id
+		// 取出好友id
 		friendId = stoi(lstStr.front());
 		lstStr.pop_front();
-		//判断好友是否在线给在线好友转发下线请求
-		m_mutex.lock(); // 后加的
-		bool friendOnline = m_mapIdToSocket.count(friendId) > 0; // 后加的
-		SOCKET friendSocket = m_mapIdToSocket[friendId]; // 后加的
-		m_mutex.unlock(); // 后加的
-		if (friendOnline) { // 后加的
-		//if (m_mapIdToSocket.count(friendId) > 0) {
-			m_pMediator->sendData(data, len, friendSocket); // 后加的
-			//m_pMediator->sendData(data, len, m_mapIdToSocket[friendId]);
-				
+		// 判断好友是否在线，如果在线发送下线通知给好友
+		m_mutex.lock();
+		bool friendOnline = m_mapIdToSocket.count(friendId) > 0;
+		SOCKET friendSocket = m_mapIdToSocket[friendId];
+		m_mutex.unlock();
+		if (friendOnline) {
+			m_pMediator->sendData(data, len, friendSocket);
 		}
 
 	}
-	//从map中取出下线用户的socket关闭，回收空间
-	m_mutex.lock(); // 后加的
-	bool userExists = m_mapIdToSocket.count(rq->myid) > 0; // 后加的
-	if (userExists) { // 后加的
-	//if (m_mapIdToSocket.count(rq->myid)>0) {
-		//取出socket关闭
+	// 从map中删除该用户socket映射关系
+	m_mutex.lock();
+	bool userExists = m_mapIdToSocket.count(rq->myid) > 0;
+	if (userExists) {
+		// 取出socket
 		SOCKET s = m_mapIdToSocket[rq->myid];
 		closesocket(s);
-		//把无效节点从map移除
+		// 删除无效映射map
 		m_mapIdToSocket.erase(rq->myid);
+		m_mapIdToLastActive.erase(rq->myid);
 	}
-	m_mutex.unlock(); // 后加的
+	m_mutex.unlock();
 }
-//添加好友
+// 处理添加好友
 void kernel::dealAddFriendRq(char* data, int len, long from)
 {
 	cout << __func__ << endl;
 	PROT_ADD_FRIEND_RQ* rq = (PROT_ADD_FRIEND_RQ*)data;
-	//1.根据好友昵称查询好友id
-	list<string> lstStr;//装查询结果
-	char sql[1024] = "";//装sql语句
+	// 1.根据好友名字查询好友id
+	list<string> lstStr;// 存储结果
+	char sql[1024] = "";// sql语句
 	sprintf_s(sql, "select id from t_user where name='%s';", rq->friendname);
-	{lock_guard<mutex> lock(m_dbMutex); // 后加的
-	if (!m_sql.SelectMySql(sql, 1, lstStr)) {
-		cout << "查询数据库失败：" << sql << endl;
-		return;
+	{
+		lock_guard<mutex> lock(m_dbMutex);
+		if (!m_sql.SelectMySql(sql, 1, lstStr)) {
+			cout << "查询数据库失败" << sql << endl;
+			return;
+		}
 	}
-	} // 后加的
-	//2.判断查询结果是否为空
+	// 2.判断好友是否存在
 	if (0 == lstStr.size()) {
-		//3.没有用户添加失败
+		// 3.好友不存在
 		PROT_ADD_FRIEND_RS rs(rq->myid, 0, DEF_ADD_FRIEND_NOTEXIST);
 		strcpy_s(rs.fromname, sizeof(rs.fromname), rq->friendname);
-		//把添加结果返回给发起请求的客户端
+		// 发送好友不存在的结果给客户端
 		m_pMediator->sendData((char*)&rs, sizeof(rs), from);
 	}
 	else {
-		//4.取出好友id
+		// 4.取出好友id
 		int friendId = stoi(lstStr.front());
 		lstStr.pop_front();
-		//5.判断好友是否在线
-		m_mutex.lock(); // 后加的
-		bool friendOnline = m_mapIdToSocket.count(friendId) > 0; // 后加的
-		SOCKET friendSocket = m_mapIdToSocket[friendId]; // 后加的
-		m_mutex.unlock(); // 后加的
-		if (friendOnline) { // 后加的
-		//if (m_mapIdToSocket.count(friendId)> 0) {
-			//6.好友在线把添加好友请求转发给好友
-			m_pMediator->sendData(data, len, friendSocket); // 后加的
-			//m_pMediator->sendData(data, len, m_mapIdToSocket[friendId]);
+		// 5.判断好友是否在线
+		m_mutex.lock();
+		bool friendOnline = m_mapIdToSocket.count(friendId) > 0;
+		SOCKET friendSocket = m_mapIdToSocket[friendId];
+		m_mutex.unlock();
+		if (friendOnline) {
+			// 6.好友在线，转发添加好友请求给好友
+			m_pMediator->sendData(data, len, friendSocket);
 		}
 		else {
-			//7.好友不在线添加好友失败
+			// ============ 原代码（修改前）：好友离线，返回错误 ============
+			// PROT_ADD_FRIEND_RS rs(rq->myid, friendId, DEF_ADD_FRIEND_OFFLINE);
+			// strcpy_s(rs.fromname, sizeof(rs.fromname), rq->friendname);
+			// // 发送好友离线的结果给客户端
+			// m_pMediator->sendData((char*)&rs, sizeof(rs), from);
+			// =============================================================
+
+			// ============ 新代码（修改后）：保存离线好友申请到数据库 ============
+			// 保存离线好友申请到数据库（新加的）
+			char insertSql[1024] = "";
+			// UTF-8转GBK（新加的）
+			std::string gbkName = utf8ToGbk(rq->myname);
+			sprintf_s(insertSql, "insert into t_offline_friend_req(from_id, to_id, from_name) values(%d, %d, '%s');", 
+				rq->myid, friendId, gbkName.c_str());
+			{
+				lock_guard<mutex> lock(m_dbMutex);
+				if (!m_sql.UpdateMySql(insertSql)) {
+					cout << "保存离线好友申请失败" << insertSql << endl;
+				} else {
+					cout << "离线好友申请已保存, from: " << rq->myid << " to: " << friendId << endl;
+				}
+			}
+			// 返回好友离线状态给申请者（新加的）
 			PROT_ADD_FRIEND_RS rs(rq->myid, friendId, DEF_ADD_FRIEND_OFFLINE);
 			strcpy_s(rs.fromname, sizeof(rs.fromname), rq->friendname);
-		//正常流程：A添加B，B当前不在线，把请求保存到数据库
-		//创建一个表：保存Aid,Bid,添加请求，请求发送时间
-		//B登录成功之后遍历这个表，取出数据转发给B把发送成功的数据从表中删除
-			//把添加结果返回给发起请求的客户端
 			m_pMediator->sendData((char*)&rs, sizeof(rs), from);
+			// ===================================================================
 		}
 	}
 }
@@ -438,35 +629,35 @@ void kernel::dealAddFriendRs(char* data, int len, long from)
 {
 	cout << __func__ << endl;
 	PROT_ADD_FRIEND_RS* rs= (PROT_ADD_FRIEND_RS*)data;
-	//1.判断对方是否同意
+	// 1.判断是否同意
 	if (DEF_ADD_FRIEND_ACCEPT==rs->result) {
-		//2.如果同意把好友关系写入数据库
+		// 2.如果同意，写入数据库表
 		
-		char sql[1024] = "";//装sql语句
+		char sql[1024] = "";// sql语句
 		sprintf_s(sql, "insert into t_friend values(%d,%d);",rs->destid,rs->fromid);
-		{lock_guard<mutex> lock(m_dbMutex); // 后加的
-		if (!m_sql.UpdateMySql(sql)) {
-			cout << "查询数据库失败：" << sql << endl;
-			return;
+		{
+			lock_guard<mutex> lock(m_dbMutex);
+			if (!m_sql.UpdateMySql(sql)) {
+				cout << "添加好友失败" << sql << endl;
+				return;
+			}
+			sprintf_s(sql, "insert into t_friend values(%d,%d);", rs->fromid, rs->destid);
+			if (!m_sql.UpdateMySql(sql)) {
+				cout << "添加好友失败" << sql << endl;
+				return;
+			}
 		}
-		sprintf_s(sql, "insert into t_friend values(%d,%d);", rs->fromid, rs->destid);
-		if (!m_sql.UpdateMySql(sql)) {
-			cout << "查询数据库失败：" << sql << endl;
-			return;
-		}
-		} // 后加的
-		//3.更新双端好友
+		// 3.更新好友信息
 		sendUserInfoAndFriendInfo(rs->destid);
 	}
-	//4.把添加结果返回给发起端
-	m_mutex.lock(); // 后加的
-	SOCKET destSocket = m_mapIdToSocket[rs->destid]; // 后加的
-	m_mutex.unlock(); // 后加的
-	m_pMediator->sendData(data, len, destSocket); // 后加的
-	//m_pMediator->sendData(data, len, m_mapIdToSocket[rs->destid]);
+	// 4.发送添加好友结果给请求者
+	m_mutex.lock();
+	SOCKET destSocket = m_mapIdToSocket[rs->destid];
+	m_mutex.unlock();
+	m_pMediator->sendData(data, len, destSocket);
 }
 
-//后加 处理心跳请求
+// 处理心跳请求
 void kernel::dealHeartbeatRq(char* data, int len, long from)
 {
 	cout << __func__ << endl;
@@ -476,7 +667,7 @@ void kernel::dealHeartbeatRq(char* data, int len, long from)
 	m_mutex.lock();
 	if (m_mapIdToSocket.count(rq->userId) > 0) {
 		m_mapIdToLastActive[rq->userId] = time(nullptr);
-		cout << "后加 更新用户活跃时间, userId: " << rq->userId << endl;
+		cout << "收到心跳包, userId: " << rq->userId << endl;
 	}
 	m_mutex.unlock();
 
@@ -485,13 +676,13 @@ void kernel::dealHeartbeatRq(char* data, int len, long from)
 	m_pMediator->sendData((char*)&rs, sizeof(rs), from);
 }
 
-//后加 检查超时用户并通知好友下线（可在服务端定时调用）
+// 检查心跳超时，如果超时则强制下线
 void kernel::checkHeartbeatTimeout()
 {
 	time_t now = time(nullptr);
 	vector<int> timeoutUsers;
 
-	// 找出所有超时用户
+	// 遍历所有用户
 	m_mutex.lock();
 	for (auto& pair : m_mapIdToLastActive) {
 		if (now - pair.second > DEF_HEARTBEAT_TIMEOUT / 1000) {
@@ -502,12 +693,12 @@ void kernel::checkHeartbeatTimeout()
 
 	// 处理超时用户
 	for (int userId : timeoutUsers) {
-		cout << "后加 用户超时下线, userId: " << userId << endl;
+		cout << "用户心跳超时, userId: " << userId << endl;
 
-		// 构造下线通知
+		// 构造下线消息
 		PROT_FRIEND_OFFLINE offline(userId);
 
-		// 查询好友列表并通知
+		// 查询好友列表
 		list<string> lstStr;
 		char sql[1024] = "";
 		sprintf_s(sql, "select idB from t_friend where idA='%d';", userId);
@@ -518,7 +709,7 @@ void kernel::checkHeartbeatTimeout()
 			}
 		}
 
-		// 通知在线好友
+		// 通知好友
 		while (lstStr.size() > 0) {
 			int friendId = stoi(lstStr.front());
 			lstStr.pop_front();
@@ -530,13 +721,10 @@ void kernel::checkHeartbeatTimeout()
 			m_mutex.unlock();
 		}
 
-		// 清理该用户的数据
+		// 删除用户映射
 		m_mutex.lock();
 		m_mapIdToSocket.erase(userId);
 		m_mapIdToLastActive.erase(userId);
 		m_mutex.unlock();
 	}
 }
-
-
-

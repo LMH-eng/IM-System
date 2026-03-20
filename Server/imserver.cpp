@@ -7,6 +7,10 @@
 using namespace std;
 int main()
 {  
+	// 设置控制台代码页为GBK，解决中文显示问题
+	SetConsoleOutputCP(936);
+	SetConsoleCP(936);
+	
 	kernel ker;
 	if (!ker.startServer())
 	{
